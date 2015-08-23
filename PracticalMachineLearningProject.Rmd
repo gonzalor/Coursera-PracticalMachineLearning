@@ -1,0 +1,174 @@
+---
+title: "Practical Machine Learning - Project"
+author: "Roberto Gonzalo Rodriguez"
+date: "23 de agosto de 2015"
+output: html_document
+---
+
+## Executive Summary ##
+
+The goal of this study is to create a predictive model capable of detect the type of exercise performed by five individuals based on the information acquired from several sensors attached on different parts of their bodies. Using random forest and cross validations we were able to create a predictive model with high accuracy and at the same time determine the most important predictor variables.
+
+## Getting the data ##
+
+The dataset was obtained from [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har) and was acquired from accelerometers on the belt, forearm, arm and dumbell of six participants. 
+
+```{r, cache=TRUE}
+# Read Csv File
+pml <- read.csv("pml-training.csv", na.strings = c("NA","#DIV/0!"))
+
+# Dimension
+dim(pml)
+```
+
+## Exploratory Analysis ##
+
+At the first step, we performed an exploratory analysis in order to design the study. The data set contains `r dim(pml)[2]` variables recorded for `r dim(pml)[1]` measures. A sample of data is shown below.
+
+```{r,echo=FALSE,warning=FALSE, message=FALSE, results='hide'}
+library(dplyr)
+library(reshape)
+library(ggplot2)
+library(caret)
+library(knitr)
+library(doParallel)
+```
+
+```{r, cache=TRUE}
+str(pml, list.len=10)
+```
+
+```{r,results='asis',echo=FALSE, cache=FALSE}
+kable(head(pml))
+```
+
+## Preparing the predictors ##
+
+Before training the model, we need to clean up the data, impute missing values if needed, and select the predictors that better describe the outcome. Browsing the data, we can conclude that columns like record number and time stamp columns should be avoided.
+
+```{r, cache=TRUE}
+pml <- select(pml, -X, -raw_timestamp_part_1, -raw_timestamp_part_2, -cvtd_timestamp)
+```
+
+We could detect that there are many columns that contains null values for many records. We decided not to impute any missing data in the first model fitting, so we excluded all parameters that have at least one NA value.
+
+```{r, cache=TRUE}
+# Exclude columns with NAs
+pml <- pml[ , apply(pml, 2, function(x) !any(is.na(x)))]
+```
+
+There could be predictors that are constants or nearly constant values. To detect and exclude those variables, we use the `nearZeroVar` function of the `caret` package.
+
+```{r, cache=TRUE}
+# Near zero predictors
+nearZeroValues <- nearZeroVar(pml, saveMetrics= TRUE)
+# Delete near zero predictors
+colsToDelete <- row.names(nearZeroValues[nearZeroValues$nzv==TRUE,])
+pml <- pml[, -which(names(pml) %in% colsToDelete)]
+```
+
+Because it is possible that highly correlated predictors exist, we use the `findCorrelation` function of the `caret` package to detect and exclude those variables
+
+```{r, cache=TRUE}
+# Identifying Correlated Predictors
+
+# Get Name of the numeric columns
+columnTypes <- melt(sapply(pml, is.numeric))
+numColumns <- row.names(columnTypes)[columnTypes$value == TRUE]
+descrCor <- cor(pml[, which( names(pml) %in% numColumns)])
+
+# Find highly correlated columns (corr > 0.90)
+correlatedColumns <- findCorrelation(descrCor)
+
+# Delete Highly correlated columns
+pml <- pml[, -which(names(pml) %in% numColumns[correlatedColumns])]
+```
+
+Now that we have exclude unnecessary colums for our first model fitting, our data set consists now of  `r dim(pml)[2]` columns which will allow us to create a better model in less time.
+
+
+```{r, fig.height=10, fig.width=10, echo=FALSE, cache=TRUE}
+sampleCols <- select(pml, 
+                       num_window, 
+                       pitch_forearm, 
+                       yaw_belt, 
+                       pitch_belt, 
+                       magnet_dumbbell_z, 
+                       magnet_dumbbell_y, magnet_belt_y)
+featurePlot(x = sampleCols,y = pml$classe, plot = "pairs", auto.key = list(columns = 5))
+```
+
+## Partition Training and Testing  ##
+
+The last step before training the model is splitting the data set into a training and testing set that will be used at the end to evaluate the out of sample error. We used the `createDataPartition` function of the `caret` package for this task.
+
+```{r, cache=TRUE}
+# Set seed for reproducibility
+set.seed(1)
+# Training set 60% / Test Set 40% of the data
+trainIndex <- createDataPartition(pml$classe, p = 0.6, list = FALSE)
+train <- pml[trainIndex,]
+test <- pml[-trainIndex,]
+```
+
+## Fitting the Model ##
+
+As we stated before, this is a **classification** problem. That is why we choose a random forest as our first attempt in the creation of a prediction model. As a training control function, we use ***repeated cross validation*** with K=5 (folds) and repeated 3 times.
+
+```{r, cache=TRUE}
+# 5-fold Cross validation, repeated 3 times
+fitControl <- trainControl(
+    method = "repeatedcv",
+    number = 5, repeats = 3)
+
+# Use parallel processing
+registerDoParallel(cores=4)
+
+# Fit the random forest
+fit.rf <- train(classe ~ ., data = train, trControl=fitControl,method = "rf")
+fit.rf
+
+# Save model for further use
+save(file="fit_rf", fit.rf)
+```
+
+The process took about 10 minutes in an Intel i5 (4 cores) 2.66Ghz 8GB RAM. We used parallel process and the optimized Revolution Analytics R 3.2.1 (64 bits) version.
+
+## Accuracy ##
+
+The created model seems to have an astonishing accuracy of 1 (100%) for the training data. This can be shown below where we used the `confusionMatrix` function to measure the in sample error.
+
+```{r, cache=TRUE}
+# Confussion Matrix for the training data set
+confusionMatrix(predict(fit.rf,newdata = train), train$classe)
+```
+
+This perfect result may well be due to overfitting. That is why we partitioned the data and have a testing data set that was not used in training. We expect the accurary to be lower than the shown in the confusion matrix above. Depending on how smaller it is we will conclude about the validity of our model.
+
+```{r, cache=TRUE}
+# Prediction - Testing set
+test.pred <- predict(fit.rf, newdata = test)
+
+# Confussion Matrix for the testing data set
+cm <- confusionMatrix(test.pred, test$classe)
+cm
+```
+
+As we expected, the accuracy **0.998** is smaller but still high and the missclasified records just a few. The conclusion then is that the fitted model was not overfitted but the chossen variables and parameters calculated were enough to predict with high accuracy the type of excercise the individuals performed.
+
+## Important Variables ##
+
+Given the model fitted we can get the most important variables that explain the outcome. See below,  
+
+```{r, cache=TRUE}
+# Random Forest Variable Importance
+varImp(fit.rf)
+```
+
+## Conclusion ##
+Using random forest and repeated (3 times) cross validation (K=5) with a reduced set of variables we were able to fit a model with excelent accuracy. Even when this model predictive capacities are difficult to overcome, other models could be fitted in order to make it simpler and faster and at the same time preserve the high level of accuracy.
+
+
+
+
+
